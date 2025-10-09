@@ -21,6 +21,12 @@ Perfect if you render overnight but want your PC to rest when it’s done.
    ```powershell
    irm https://raw.githubusercontent.com/ercercercerc68/C4D-SmartSleep/main/install.ps1 | iex
 
+This installs everything under C:\Scripts\, including:
+- C4D-SmartSleep.ps1 (main logic)
+- C4D-SmartSleep.vbs (runs hidden)
+- C4D-SmartSleep.log (activity log)
+A hidden scheduled task named “C4D Smart Sleep” will run every 5 minutes automatically.   
+
 **Or:**
 
 1. Clone or download this repository:
@@ -36,7 +42,9 @@ Done. It will check every 5 minutes whether to sleep or not.
 
 
 ## Requirements: 
-NVIDIA GPUs + drivers (so nvidia-smi exists), PowerShell 5.1 (default on Win10/11).
+- Windows 10 or 11;
+- NVIDIA GPU with drivers installed (so nvidia-smi works);
+- PowerShell 5.1 or newer (included in Windows)
 
 ## Default behavior: 
 Sleeps after 15 min idle, unless Cinema4D is open and busy (CPU+GPU activity sampled 3×).
