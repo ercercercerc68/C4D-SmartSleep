@@ -23,9 +23,12 @@ Perfect if you render overnight but want your PC to rest when it’s done.
 
 **Or:**
 
-- Download C4D-SmartSleep.zip
-- Unzip to C:\Scripts\
-- Run install.ps1 as administrator
+1. Clone or download this repository:
+   - Click **Code → Download ZIP**, or  
+   - Run `git clone https://github.com/ercercercerc68/C4D-SmartSleep.git`
+2. Unzip (if downloaded as ZIP) and run:
+   ```powershell
+   PowerShell.exe -NoProfile -ExecutionPolicy Bypass -File ".\install.ps1"
 
 Done. It will check every 5 minutes whether to sleep or not.
 
