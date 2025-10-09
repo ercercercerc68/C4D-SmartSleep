@@ -50,7 +50,12 @@ Activity detected -> stay awake
 ## Tuning: 
 Edit the first few lines of C:\Scripts\C4D-SmartSleep.ps1 to adjust thresholds/intervals.
 
+## Troubleshooting
+- Turn off Fast Startup: powercfg /hibernate off
+- Check blockers: powercfg /requests
+- Log location: C:\Scripts\C4D-SmartSleep.log
 
 ## About
 Created by Eric Smilde.
 Inspired by the need to let your PC rest, but never mid-render.
+Tested with dual RTX 3080 + Redshift.
