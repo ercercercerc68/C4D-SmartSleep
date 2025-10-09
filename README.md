@@ -1,5 +1,5 @@
 # C4D Smart Sleep 💤
-Automatically puts your PC to sleep after being idle — **except when Cinema 4D is actually rendering**.
+Automatically puts your PC to sleep after being idle. **except when Cinema 4D is actually rendering**.
 
 ---
 
