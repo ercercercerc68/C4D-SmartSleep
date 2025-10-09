@@ -49,3 +49,8 @@ Activity detected -> stay awake
 
 ## Tuning: 
 Edit the first few lines of C:\Scripts\C4D-SmartSleep.ps1 to adjust thresholds/intervals.
+
+
+## About
+Created by Eric Smilde.
+Inspired by the need to let your PC rest, but never mid-render.
