@@ -26,6 +26,7 @@ Perfect if you render overnight but want your PC to rest when it’s done.
 1. Clone or download this repository:
    - Click **Code → Download ZIP**, or  
    - Run `git clone https://github.com/ercercercerc68/C4D-SmartSleep.git`
+   
 2. Unzip (if downloaded as ZIP) and run:
    ```powershell
    PowerShell.exe -NoProfile -ExecutionPolicy Bypass -File ".\install.ps1"
