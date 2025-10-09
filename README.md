@@ -25,6 +25,7 @@ This installs everything under C:\Scripts\, including:
 - C4D-SmartSleep.ps1 (main logic)
 - C4D-SmartSleep.vbs (runs hidden)
 - C4D-SmartSleep.log (activity log)
+- C4D-SmartSleep-Uninstall.ps1
 A hidden scheduled task named “C4D Smart Sleep” will run every 5 minutes automatically.   
 
 **Or:**
