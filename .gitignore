@@ -1,0 +1,30 @@
+# Windows system files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Log files
+*.log
+
+# PowerShell temporary files
+*.ps1~ 
+*.ps1.tmp
+*.bak
+
+# VSCode or PowerShell ISE workspace settings
+.vscode/
+*.workspace
+*.suo
+*.user
+*.vspscc
+
+# macOS cruft (in case anyone clones on Mac)
+.DS_Store
+
+# Python cache (just in case future scripts expand)
+__pycache__/
+*.pyc
+
+# Archives or zips you may export
+*.zip
