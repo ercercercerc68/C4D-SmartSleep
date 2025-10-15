@@ -1,11 +1,13 @@
-# C4D-SmartSleep.ps1  (v3: nvidia-smi only + CPU+GPU gating + hidden-friendly logging) -- PS 5.1 compatible
+# C4D-SmartSleep.ps1  (v3.1: nvidia-smi only + CPU+GPU gating + logging + Conditional Windows Update latch)
+# Sleep after idle unless Cinema4D is actually rendering.
+# Works with Windows PowerShell 5.1 and NVIDIA GPUs.
 
 # ===== CONFIG =====
-$IdleMinutesThreshold   = 15       # raise/lower as you like
-$GpuIdleThresholdPct    = 10       # ALL GPUs must be < this
-$CpuIdleThresholdPct    = 8        # cinema4d.exe overall CPU% must be < this
+$IdleMinutesThreshold   = 15
+$GpuIdleThresholdPct    = 10
+$CpuIdleThresholdPct    = 8
 $Samples                = 3
-$SampleIntervalSecs     = 60       # between samples
+$SampleIntervalSecs     = 60
 $C4DNames               = @('cinema4d','cinema4d.exe','Cinema 4D','Cinema 4D.exe','Commandline','Commandline.exe')
 
 # ===== LOGGING =====
@@ -14,7 +16,55 @@ $LogFile = Join-Path $LogDir 'C4D-SmartSleep.log'
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
 if (-not (Test-Path $LogFile)) { New-Item -ItemType File -Path $LogFile -Force | Out-Null }
 function Log([string]$msg){ try { "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg" | Out-File -FilePath $LogFile -Append -Encoding utf8 } catch {} }
-Log "----- Script start ----- (user=$env:USERNAME, ver=v3 nvidia-smi)"
+Log "----- Script start ----- (user=$env:USERNAME, ver=v3.1 conditional WU latch)"
+
+# ===== WINDOWS UPDATE SAFETY LATCH =====
+function Ensure-Admin {
+    if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
+        ).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
+        Write-Host "Restarting as administrator..."
+        Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+        exit
+    }
+}
+Ensure-Admin
+
+$global:WindowsUpdateWasRunning = $false
+
+function Pause-WindowsUpdate {
+    try {
+        $svc = Get-Service -Name wuauserv -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -eq 'Running') {
+            $global:WindowsUpdateWasRunning = $true
+            Stop-Service wuauserv -Force -ErrorAction SilentlyContinue
+            Log "[INFO] Windows Update service stopped."
+        } else {
+            Log "[INFO] Windows Update service already stopped."
+        }
+
+        # Safety task to restore service at next logon
+        $act = New-ScheduledTaskAction -Execute "powershell.exe" -Argument '-NoProfile -WindowStyle Hidden -Command \"Start-Service wuauserv; Unregister-ScheduledTask -TaskName Restore-WindowsUpdate -Confirm:$false\"'
+        $trg = New-ScheduledTaskTrigger -AtLogOn
+        Register-ScheduledTask -TaskName "Restore-WindowsUpdate" -Action $act -Trigger $trg -RunLevel Highest -Force | Out-Null
+    } catch {
+        Log "[ERROR] Failed to stop Windows Update: $($_.Exception.Message)"
+    }
+}
+
+function Restore-WindowsUpdate {
+    try {
+        if ($global:WindowsUpdateWasRunning) {
+            Start-Service wuauserv -ErrorAction SilentlyContinue
+            Log "[INFO] Windows Update service restored."
+        }
+        Unregister-ScheduledTask -TaskName "Restore-WindowsUpdate" -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+    } catch {
+        Log "[ERROR] Failed to restore Windows Update: $($_.Exception.Message)"
+    }
+}
+
+# Stop Windows Update now to prevent mid-render reboots
+Pause-WindowsUpdate
 
 # ===== IDLE TIME =====
 Add-Type @"
@@ -62,7 +112,6 @@ function Get-C4D-CPUPercent([int]$intervalSeconds){
 }
 
 # ===== GPU util via nvidia-smi =====
-# Returns: array of ints (one per GPU) OR $null if nvidia-smi not found/fails
 function Get-NV-GpuUtils {
   try {
     $cmd = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
@@ -93,7 +142,6 @@ function Should-Sleep {
 
   $okCount = 0
   for ($i=1; $i -le $Samples; $i++){
-    # sample CPU over half-interval for better smoothing
     $cpuPct = Get-C4D-CPUPercent -intervalSeconds ([math]::Max([int]($SampleIntervalSecs/2), 5))
     $gpuArr = Get-NV-GpuUtils
     $gpuTxt = if ($gpuArr) { ($gpuArr -join ',') } else { 'null' }
@@ -102,7 +150,6 @@ function Should-Sleep {
     if ($cpuPct -eq $null -or $gpuArr -eq $null) {
       Log "Null metric -> conservative: stay awake"
     } else {
-      # ALL GPUs must be below threshold AND CPU below threshold
       $allGpuIdle = ($gpuArr | Where-Object { $_ -ge $GpuIdleThresholdPct }).Count -eq 0
       if ($allGpuIdle -and ($cpuPct -lt $CpuIdleThresholdPct)) { $okCount++ }
     }
@@ -130,3 +177,11 @@ function Go-ToSleep {
 try {
   if (Should-Sleep) { Go-ToSleep } else { Log "Decision: stay awake" }
 } catch { Log "FATAL: $($_.Exception.Message)" }
+finally {
+  # Only restore Windows Update if Cinema 4D is NOT running
+  if (-not (Is-C4DRunning)) {
+    Restore-WindowsUpdate
+  } else {
+    Log "[INFO] Cinema 4D active -> keeping Windows Update service stopped."
+  }
+}
