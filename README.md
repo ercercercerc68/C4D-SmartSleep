@@ -1,5 +1,5 @@
 # C4D Smart Sleep 💤
-Automatically puts your PC to sleep after being idle — **except when Cinema 4D is actually rendering**.
+Automatically puts your PC to sleep after being idle. **except when Cinema 4D is actually rendering**.
 
 ---
 
@@ -21,18 +21,31 @@ Perfect if you render overnight but want your PC to rest when it’s done.
    ```powershell
    irm https://raw.githubusercontent.com/ercercercerc68/C4D-SmartSleep/main/install.ps1 | iex
 
+This installs everything under C:\Scripts\, including:
+- C4D-SmartSleep.ps1 (main logic)
+- C4D-SmartSleep.vbs (runs hidden)
+- C4D-SmartSleep.log (activity log)
+- C4D-SmartSleep-Uninstall.ps1
+A hidden scheduled task named “C4D Smart Sleep” will run every 5 minutes automatically.   
+
 **Or:**
 
-- Download C4D-SmartSleep.zip
-- Unzip to C:\Scripts\
-- Run install.ps1 as administrator
+1. Clone or download this repository:
+   - Click **Code → Download ZIP**, or  
+   - Run `git clone https://github.com/ercercercerc68/C4D-SmartSleep.git`
+   
+2. Unzip (if downloaded as ZIP) and run:
+   ```powershell
+   PowerShell.exe -NoProfile -ExecutionPolicy Bypass -File ".\install.ps1"
 
 Done. It will check every 5 minutes whether to sleep or not.
 
 
 
 ## Requirements: 
-NVIDIA GPUs + drivers (so nvidia-smi exists), PowerShell 5.1 (default on Win10/11).
+- Windows 10 or 11;
+- NVIDIA GPU with drivers installed (so nvidia-smi works);
+- PowerShell 5.1 or newer (included in Windows)
 
 ## Default behavior: 
 Sleeps after 15 min idle, unless Cinema4D is open and busy (CPU+GPU activity sampled 3×).
@@ -45,3 +58,13 @@ Activity detected -> stay awake
 
 ## Tuning: 
 Edit the first few lines of C:\Scripts\C4D-SmartSleep.ps1 to adjust thresholds/intervals.
+
+## Troubleshooting
+- Turn off Fast Startup: powercfg /hibernate off
+- Check blockers: powercfg /requests
+- Log location: C:\Scripts\C4D-SmartSleep.log
+
+## About
+Created by Eric Smilde.
+Inspired by the need to let your PC rest, but never mid-render.
+Tested with dual RTX 3080 + Redshift.
