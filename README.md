@@ -7,6 +7,7 @@ Automatically puts your PC to sleep after being idle. **except when Cinema 4D is
 - Monitors **user idle time**
 - Detects if **Cinema 4D is running**
 - Samples **CPU usage and all NVIDIA GPUs** via `nvidia-smi`
+- (Optional safety) If **Deadline Worker is not idle**, the script will **never** sleep the machine
 - If everything is idle → PC goes to sleep automatically  
 - Runs invisibly every 5 minutes (no pop-ups)
 
@@ -50,6 +51,11 @@ Done. It will check every 5 minutes whether to sleep or not.
 ## Default behavior: 
 Sleeps after 15 min idle, unless Cinema4D is open and busy (CPU+GPU activity sampled 3×).
 
+If `deadlinecommand.exe` is available, the script also requires the **local Deadline Worker** to be **Idle** before it will sleep.
+If Deadline status can’t be determined, it stays awake (conservative).
+
+CPU sampling uses **per-sample intervals** by default (6s, 45s, 75s) to avoid accidental alignment with fixed-length renders.
+
 ## Logs: 
 C:\Scripts\C4D-SmartSleep.log shows decisions and samples, e.g:
 
@@ -58,6 +64,8 @@ Activity detected -> stay awake
 
 ## Tuning: 
 Edit the first few lines of C:\Scripts\C4D-SmartSleep.ps1 to adjust thresholds/intervals.
+
+Tip: To avoid “perfect alignment” with fixed-length renders, the CPU sampling uses per-sample windows (defaults to 6s, 45s, 75s). You can change those in `$SampleIntervalsSecs`.
 
 ## Troubleshooting
 - Turn off Fast Startup: powercfg /hibernate off
