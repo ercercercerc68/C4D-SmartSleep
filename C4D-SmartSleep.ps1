@@ -1,4 +1,4 @@
-# C4D-SmartSleep.ps1  (v3.2: Deadline-idle gating + per-sample intervals)
+# C4D-SmartSleep.ps1  (v3.3: opportunistic Deadline idle gating + per-sample intervals)
 # Sleep after idle unless Cinema4D is actually rendering.
 # Works with Windows PowerShell 5.1 and NVIDIA GPUs.
 
@@ -94,7 +94,16 @@ function Get-AnyProcess([string[]]$names){
 function Is-C4DRunning { $null -ne (Get-AnyProcess $C4DNames) }
 
 # ===== DEADLINE HELPERS =====
-# Only go to sleep when Deadline is idle. If we can't determine status, we stay awake (conservative).
+# Deadline is an *extra* safeguard:
+# - If the Deadline Worker process is NOT running, we ignore Deadline completely.
+# - If the Worker IS running, we only allow sleep when its status is explicitly Idle.
+#   If we can't determine the status, we stay awake (conservative).
+
+function Is-DeadlineWorkerRunning {
+  try {
+    return $null -ne (Get-Process -Name 'deadlineworker' -ErrorAction SilentlyContinue)
+  } catch { return $false }
+}
 function Get-DeadlineCommandPath {
   $cmd = Get-Command deadlinecommand.exe -ErrorAction SilentlyContinue
   if ($cmd) { return $cmd.Source }
@@ -201,11 +210,13 @@ function Should-Sleep {
   Log ("Idle={0} min" -f $idle)
   if ($idle -lt $IdleMinutesThreshold){ Log "Not enough idle time"; return $false }
 
-  # Deadline safety: only sleep when Deadline is idle.
-  $dlIdle = Is-DeadlineIdle
-  if ($dlIdle -ne $true) {
-    if ($dlIdle -eq $false) { Log "Deadline busy -> stay awake" } else { Log "Deadline status unknown -> stay awake" }
-    return $false
+  # Deadline safety (opportunistic): only gate sleep if the Deadline Worker is running.
+  if (Is-DeadlineWorkerRunning) {
+    $dlIdle = Is-DeadlineIdle
+    if ($dlIdle -ne $true) {
+      if ($dlIdle -eq $false) { Log "Deadline Worker busy -> stay awake" } else { Log "Deadline Worker status unknown -> stay awake" }
+      return $false
+    }
   }
 
   $isC4D = Is-C4DRunning
