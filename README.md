@@ -7,7 +7,7 @@ Automatically puts your PC to sleep after being idle. **except when Cinema 4D is
 - Monitors **user idle time**
 - Detects if **Cinema 4D is running**
 - Samples **CPU usage and all NVIDIA GPUs** via `nvidia-smi`
-- (Optional safety) If **Deadline Worker is running and not idle**, the script will **never** sleep the machine
+- (Optional safety) If **Deadline Worker is running and clearly busy/rendering**, the script will **not** sleep the machine
 - If everything is idle → PC goes to sleep automatically  
 - Runs invisibly every 5 minutes (no pop-ups)
 
@@ -51,8 +51,8 @@ Done. It will check every 5 minutes whether to sleep or not.
 ## Default behavior: 
 Sleeps after 15 min idle, unless Cinema4D is open and busy (CPU+GPU activity sampled 3×).
 
-If the **Deadline Worker** is running, the script also requires it to be **Idle** before it will sleep. If the worker is **not running** (or Deadline isn't installed), Deadline is ignored and the script behaves normally.
-If the Worker is running but its status can’t be determined, it stays awake (conservative).
+If the **Deadline Worker process is running**, the script queries its status (via `deadlinecommand.exe`) and will block sleep only when the Worker is clearly busy/rendering.
+If Deadline status can’t be determined (unknown), it does **not** block sleep; Deadline only acts as an extra veto when it’s clearly busy.
 
 CPU sampling uses **per-sample intervals** by default (6s, 45s, 75s) to avoid accidental alignment with fixed-length renders.
 
