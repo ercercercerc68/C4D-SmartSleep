@@ -151,12 +151,12 @@ function Test-DeadlineIdle {
   # If Worker is not running at all, Deadline is not active -> don't gate sleep.
   if (-not (Test-DeadlineWorkerRunning)) { return $true }
 
-  # Worker IS running. Block sleep only when status is clearly busy.
+  # Worker IS running. Only block when we can clearly see it's busy.
+  # Unknown status (deadlinecommand unreachable/returns nothing) = fall through to CPU/GPU sampling.
   $status = Get-DeadlineStatusString
   if (-not $status) {
-    Log "Deadline Worker running but status=unknown -> stay awake (conservative)"
-    # Unknown status while Worker is up: conservative stay-awake.
-    return $false
+    Log "Deadline status=unknown -> not blocking (will rely on CPU/GPU sampling)"
+    return $true
   }
 
   Log ("Deadline status={0}" -f $status)
