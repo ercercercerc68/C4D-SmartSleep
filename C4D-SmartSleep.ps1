@@ -1,15 +1,16 @@
-# C4D-SmartSleep.ps1  (v3.3: Deadline opportunistic gating + de-synced sampling)
-# Sleep after idle unless Cinema4D is actually rendering.
+# C4D-SmartSleep.ps1  (v4: GPU P-state + robust CPU sampling + between-job guard)
+# Sleep after idle only when neither Cinema 4D nor Deadline is rendering.
 # Works with Windows PowerShell 5.1 and NVIDIA GPUs.
 
 # ===== CONFIG =====
 $IdleMinutesThreshold   = 15
 $GpuIdleThresholdPct    = 10
 $CpuIdleThresholdPct    = 8
-$Samples                = 3
-# Per-sample CPU window (seconds). This avoids accidental "perfect alignment" with fixed-length renders.
-# If you change $Samples, either add more entries or the script will auto-fill with random intervals.
-$SampleIntervalsSecs    = @(59, 45, 76)
+$Samples                = 5
+$GpuPStateMaxIdle       = 1      # P0/P1 = truly idle; P2+ = active compute
+# Per-sample CPU window (seconds). De-synced to avoid aligning with fixed-length render frames.
+# If you add more $Samples, add matching entries here (or the script auto-fills with random intervals).
+$SampleIntervalsSecs    = @(59, 45, 76, 52, 68)
 $C4DNames               = @('cinema4d','cinema4d.exe','Cinema 4D','Cinema 4D.exe','Commandline','Commandline.exe')
 
 # ===== LOGGING =====
@@ -18,7 +19,7 @@ $LogFile = Join-Path $LogDir 'C4D-SmartSleep.log'
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
 if (-not (Test-Path $LogFile)) { New-Item -ItemType File -Path $LogFile -Force | Out-Null }
 function Log([string]$msg){ try { "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg" | Out-File -FilePath $LogFile -Append -Encoding utf8 } catch {} }
-Log "----- Script start ----- (user=$env:USERNAME, ver=v3.2 deadline-idle gating)"
+Log "----- Script start ----- (user=$env:USERNAME, ver=v4 pstate+deadline)"
 
 # ===== WINDOWS UPDATE SAFETY LATCH =====
 function Ensure-Admin {
@@ -44,7 +45,6 @@ function Pause-WindowsUpdate {
             Log "[INFO] Windows Update service already stopped."
         }
 
-        # Safety task to restore service at next logon
         $act = New-ScheduledTaskAction -Execute "powershell.exe" -Argument '-NoProfile -WindowStyle Hidden -Command \"Start-Service wuauserv; Unregister-ScheduledTask -TaskName Restore-WindowsUpdate -Confirm:$false\"'
         $trg = New-ScheduledTaskTrigger -AtLogOn
         Register-ScheduledTask -TaskName "Restore-WindowsUpdate" -Action $act -Trigger $trg -RunLevel Highest -Force | Out-Null
@@ -65,7 +65,6 @@ function Restore-WindowsUpdate {
     }
 }
 
-# Stop Windows Update now to prevent mid-render reboots
 Pause-WindowsUpdate
 
 # ===== IDLE TIME =====
@@ -91,10 +90,9 @@ function Get-AnyProcess([string[]]$names){
   foreach ($n in $names){ $p = Get-Process -Name $n -ErrorAction SilentlyContinue; if ($p){ return $p } }
   return $null
 }
-function Is-C4DRunning { $null -ne (Get-AnyProcess $C4DNames) }
+function Test-C4DRunning { $null -ne (Get-AnyProcess $C4DNames) }
 
 # ===== DEADLINE HELPERS =====
-# Only go to sleep when Deadline is idle. If we can't determine status, we stay awake (conservative).
 function Get-DeadlineCommandPath {
   $cmd = Get-Command deadlinecommand.exe -ErrorAction SilentlyContinue
   if ($cmd) { return $cmd.Source }
@@ -109,9 +107,8 @@ function Get-DeadlineCommandPath {
   return $null
 }
 
-function Is-DeadlineWorkerRunning {
+function Test-DeadlineWorkerRunning {
   try {
-    # Only enforce Deadline gating when the Worker process is actually running.
     $p = Get-Process -Name "deadlineworker" -ErrorAction SilentlyContinue
     return ($null -ne $p)
   } catch {
@@ -119,17 +116,13 @@ function Is-DeadlineWorkerRunning {
   }
 }
 
-
-
 function Get-DeadlineWorkerInfoText {
   try {
     $dc = Get-DeadlineCommandPath
     if (-not $dc) { Log "deadlinecommand.exe not found"; return $null }
     $workerName = $env:COMPUTERNAME
-    # Deadline 10 historically used "Slave" in command names; this still works on many installs.
     $out = & $dc -GetSlaveInfo $workerName 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $out) {
-      # Fallback attempt (some installs may expose a Worker variant).
       $out = & $dc -GetWorkerInfo $workerName 2>$null
     }
     if (-not $out) { return $null }
@@ -144,74 +137,101 @@ function Get-DeadlineStatusString {
   $txt = Get-DeadlineWorkerInfoText
   if (-not $txt) { return $null }
 
-  # Try common keys.
   if ($txt -match '(?im)^\s*(SlaveStatus|WorkerStatus)\s*=\s*(.+?)\s*$') { return $matches[2].Trim() }
   if ($txt -match '(?im)^\s*Status\s*=\s*(.+?)\s*$') { return $matches[1].Trim() }
   if ($txt -match '(?im)^\s*State\s*=\s*(.+?)\s*$') { return $matches[1].Trim() }
 
-  # Last resort: look for a line that contains "Rendering"/"Idle".
   foreach ($line in ($txt -split "`n")) {
     if ($line -match '(?i)rendering|idle') { return $line.Trim() }
   }
   return $null
 }
 
-function Is-DeadlineIdle {
-  # Opportunistic safeguard:
-  # - If Deadline Worker is NOT running, treat as "not busy" and don't gate sleep.
-  # - If Worker IS running, block sleep only when we can clearly see it's busy/rendering.
-  if (-not (Is-DeadlineWorkerRunning)) { return $true }
+function Test-DeadlineIdle {
+  # If Worker is not running at all, Deadline is not active -> don't gate sleep.
+  if (-not (Test-DeadlineWorkerRunning)) { return $true }
 
+  # Worker IS running. Block sleep only when status is clearly busy.
   $status = Get-DeadlineStatusString
   if (-not $status) {
-    Log "Deadline status=unknown"
-    # Unknown should NOT block sleep; we only block on clearly busy states.
-    return $true
+    Log "Deadline Worker running but status=unknown -> stay awake (conservative)"
+    # Unknown status while Worker is up: conservative stay-awake.
+    return $false
   }
 
   Log ("Deadline status={0}" -f $status)
-
-  # Common busy-ish states (block sleep).
   if ($status -match '(?i)render|busy|starting|running|initializ|processing|encoding') { return $false }
-
-  # Idle or anything else -> don't block sleep.
   return $true
 }
 
-# ===== C4D CPU% (delta method) =====
+# ===== C4D CPU% (delta method, robust to process exit mid-sample) =====
 function Get-C4D-CPUPercent([int]$intervalSeconds){
-  $procsA = @(); foreach ($n in $C4DNames){ $procsA += Get-Process -Name $n -ErrorAction SilentlyContinue }
-  if (-not $procsA){ return $null }
-  $logical = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
-  $tA = @{}; foreach ($p in $procsA){ $tA[$p.Id] = $p.TotalProcessorTime.TotalSeconds }
+  try {
+    $procsA = @()
+    foreach ($n in $C4DNames){ $procsA += Get-Process -Name $n -ErrorAction SilentlyContinue }
+    if (-not $procsA){ return $null }
 
-  Start-Sleep -Seconds $intervalSeconds
+    $logical = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+    $tA = @{}
+    foreach ($p in $procsA){ try { $tA[$p.Id] = $p.TotalProcessorTime.TotalSeconds } catch {} }
 
-  $procsB = @(); foreach ($n in $C4DNames){ $procsB += Get-Process -Name $n -ErrorAction SilentlyContinue }
-  if (-not $procsB){ return $null }
-  $cpuDelta = 0.0
-  foreach ($p in $procsB){
-    $tB = $p.TotalProcessorTime.TotalSeconds
-    if ($tA.ContainsKey($p.Id)){ $cpuDelta += [math]::Max(0, $tB - $tA[$p.Id]) }
+    Start-Sleep -Seconds $intervalSeconds
+
+    $procsB = @()
+    foreach ($n in $C4DNames){ $procsB += Get-Process -Name $n -ErrorAction SilentlyContinue }
+    if (-not $procsB){ return $null }
+
+    $cpuDelta = 0.0
+    $matched  = 0
+    foreach ($p in $procsB){
+      try {
+        $tB = $p.TotalProcessorTime.TotalSeconds
+        if ($tA.ContainsKey($p.Id)){
+          $cpuDelta += [math]::Max(0, $tB - $tA[$p.Id])
+          $matched++
+        }
+      } catch {}
+    }
+    if ($matched -eq 0){ return $null }
+    $pct = ($cpuDelta / ($intervalSeconds * [double]$logical)) * 100.0
+    return [int][math]::Round([math]::Min([math]::Max($pct, 0), 1000))
+  } catch {
+    return $null
   }
-  $pct = ($cpuDelta / ($intervalSeconds * [double]$logical)) * 100.0
-  return [int][math]::Round([math]::Min([math]::Max($pct,0),1000))
 }
 
-# ===== GPU util via nvidia-smi =====
-function Get-NV-GpuUtils {
+# ===== GPU util + P-state via nvidia-smi =====
+function Get-NV-GpuInfo {
+  # Returns hashtable with .Utils (int[]) and .PStates (int[])
+  # P-state: 0/1 = idle, 2+ = active compute (GPU is working even if util% briefly dips to 0)
   try {
     $cmd = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
     if (-not $cmd){ Log "nvidia-smi not found"; return $null }
-    $out = & $cmd.Source --query-gpu=utilization.gpu --format=csv,noheader,nounits
+
+    $out = & $cmd.Source --query-gpu=utilization.gpu,pstate --format=csv,noheader,nounits 2>&1
     if (-not $out){ Log "nvidia-smi returned empty output"; return $null }
-    $vals = @()
+
+    $utils   = @()
+    $pstates = @()
     foreach ($line in ($out -split "`n")) {
       $s = $line.Trim()
-      if ($s -match '^\d+$'){ $vals += [int]$s }
+      if (-not $s){ continue }
+      # Expected format per GPU: "45, P2"
+      if ($s -match '^(\d+)\s*,\s*P(\d+)$'){
+        $utils   += [int]$Matches[1]
+        $pstates += [int]$Matches[2]
+      }
     }
-    if ($vals.Count -gt 0){ return ,$vals } else { Log "nvidia-smi parsed no numbers"; return $null }
-  } catch { Log ("nvidia-smi failed: {0}" -f $_.Exception.Message); return $null }
+    if ($utils.Count -gt 0){
+      return @{ Utils = $utils; PStates = $pstates }
+    } else {
+      Log "nvidia-smi parsed no GPU data from: $($out -join '|')"
+      return $null
+    }
+  } catch {
+    Log ("nvidia-smi failed: {0}" -f $_.Exception.Message)
+    return $null
+  }
 }
 
 # ===== DECISION =====
@@ -220,47 +240,64 @@ function Should-Sleep {
   Log ("Idle={0} min" -f $idle)
   if ($idle -lt $IdleMinutesThreshold){ Log "Not enough idle time"; return $false }
 
-  # Deadline safety: if the Deadline Worker is running, only block sleep when it is clearly busy.
-  $dlIdle = Is-DeadlineIdle
-  if ($dlIdle -eq $false) { Log "Deadline busy -> stay awake"; return $false }
+  # Deadline safety check (uses deadlinecommand.exe for authoritative status).
+  $dlIdle = Test-DeadlineIdle
+  if (-not $dlIdle) { Log "Deadline busy -> stay awake"; return $false }
 
-  $isC4D = Is-C4DRunning
-  Log ("C4D running={0}" -f $isC4D)
+  $isC4D          = Test-C4DRunning
+  $isDeadlineProc = Test-DeadlineWorkerRunning
+  Log ("C4D running={0}  DeadlineWorker running={1}" -f $isC4D, $isDeadlineProc)
+
+  # If Deadline Worker is up but C4D hasn't launched yet -> between-job gap, stay awake.
+  if ($isDeadlineProc -and -not $isC4D){
+    Log "Deadline Worker running but C4D not yet launched (between jobs) -> stay awake"
+    return $false
+  }
+
   if (-not $isC4D){
     Log "C4D not running -> OK to sleep"
     return $true
   }
 
-  # Build per-sample intervals: use configured list, then auto-fill with random values if needed.
+  # Build per-sample intervals; auto-fill with random values if $Samples > list length.
   $intervals = @()
   if ($SampleIntervalsSecs) { $intervals += $SampleIntervalsSecs }
   while ($intervals.Count -lt $Samples) {
-    # Random interval to avoid repeating alignment (pick a non-trivial range).
     $intervals += (Get-Random -Minimum 20 -Maximum 90)
   }
 
   $okCount = 0
-  for ($i=1; $i -le $Samples; $i++){
-    $interval = [int]$intervals[$i-1]
-    $cpuPct = Get-C4D-CPUPercent -intervalSeconds ([math]::Max($interval, 5))
-    $gpuArr = Get-NV-GpuUtils
-    $gpuTxt = if ($gpuArr) { ($gpuArr -join ',') } else { 'null' }
-    Log ("Sample {0}/{1} (win={2}s): CPU={3}%  GPUs=[{4}]" -f $i, $Samples, $interval, ($cpuPct -as [string]), $gpuTxt)
+  for ($i = 1; $i -le $Samples; $i++){
+    $interval = [int]$intervals[$i - 1]
+    $cpuPct   = Get-C4D-CPUPercent -intervalSeconds ([math]::Max($interval, 5))
+    $gpuInfo  = Get-NV-GpuInfo
 
-    if ($cpuPct -eq $null -or $gpuArr -eq $null) {
-      Log "Null metric -> conservative: stay awake"
-    } else {
-      $allGpuIdle = ($gpuArr | Where-Object { $_ -ge $GpuIdleThresholdPct }).Count -eq 0
-      if ($allGpuIdle -and ($cpuPct -lt $CpuIdleThresholdPct)) { $okCount++ }
+    $gpuUtilTxt   = if ($gpuInfo) { ($gpuInfo.Utils   -join ',') } else { 'null' }
+    $gpuPStateTxt = if ($gpuInfo) { ($gpuInfo.PStates | ForEach-Object { "P$_" }) -join ',' } else { 'null' }
+    Log ("Sample {0}/{1} (win={2}s): CPU={3}%  GPUs=[{4}]  PStates=[{5}]" -f $i, $Samples, $interval, ($cpuPct -as [string]), $gpuUtilTxt, $gpuPStateTxt)
+
+    if ($null -eq $cpuPct -or $null -eq $gpuInfo){
+      Log "  Null metric -> conservative: stay awake"
+      continue
     }
-    # No extra sleep needed; the CPU window already spaces the samples.
+
+    # GPU is idle only if: util% all below threshold AND all P-states <= GpuPStateMaxIdle (P0/P1)
+    $anyGpuBusy    = ($gpuInfo.Utils   | Where-Object { $_ -ge $GpuIdleThresholdPct }).Count -gt 0
+    $anyGpuCompute = ($gpuInfo.PStates | Where-Object { $_ -gt $GpuPStateMaxIdle     }).Count -gt 0
+
+    if (-not $anyGpuBusy -and -not $anyGpuCompute -and ($cpuPct -lt $CpuIdleThresholdPct)){
+      $okCount++
+      Log ("  -> idle (okCount={0}/{1})" -f $okCount, $Samples)
+    } else {
+      Log ("  -> active (gpuBusy={0}, gpuCompute={1}, cpuHigh={2})" -f $anyGpuBusy, $anyGpuCompute, ($cpuPct -ge $CpuIdleThresholdPct))
+    }
   }
 
   if ($okCount -eq $Samples){
-    Log "All samples below thresholds (CPU<$CpuIdleThresholdPct & ALL GPUs<$GpuIdleThresholdPct) -> OK to sleep"
+    Log "All $Samples samples idle (CPU<$CpuIdleThresholdPct% & GPUs<$GpuIdleThresholdPct% & P-state<=P$GpuPStateMaxIdle) -> OK to sleep"
     return $true
   } else {
-    Log "Activity detected -> stay awake"
+    Log "Activity detected ($okCount/$Samples idle samples) -> stay awake"
     return $false
   }
 }
@@ -278,8 +315,7 @@ try {
   if (Should-Sleep) { Go-ToSleep } else { Log "Decision: stay awake" }
 } catch { Log "FATAL: $($_.Exception.Message)" }
 finally {
-  # Only restore Windows Update if Cinema 4D is NOT running
-  if (-not (Is-C4DRunning)) {
+  if (-not (Test-C4DRunning)) {
     Restore-WindowsUpdate
   } else {
     Log "[INFO] Cinema 4D active -> keeping Windows Update service stopped."
