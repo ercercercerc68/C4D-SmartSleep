@@ -107,60 +107,29 @@ function Get-DeadlineCommandPath {
   return $null
 }
 
-function Test-DeadlineWorkerRunning {
-  try {
-    $p = Get-Process -Name "deadlineworker" -ErrorAction SilentlyContinue
-    return ($null -ne $p)
-  } catch {
-    return $false
-  }
-}
-
-function Get-DeadlineWorkerInfoText {
+function Get-DeadlineSlaveStatus {
+  # Returns the raw SlaveStatus string ("Idle", "Rendering", "Starting", etc.) or $null
   try {
     $dc = Get-DeadlineCommandPath
     if (-not $dc) { Log "deadlinecommand.exe not found"; return $null }
-    $workerName = $env:COMPUTERNAME
-    $out = & $dc -GetSlaveInfo $workerName 2>$null
-    if ($LASTEXITCODE -ne 0 -or -not $out) {
-      $out = & $dc -GetWorkerInfo $workerName 2>$null
-    }
-    if (-not $out) { return $null }
-    return ($out -join "`n")
+    $out = & $dc -GetSlaveInfo $env:COMPUTERNAME SlaveStatus 2>&1
+    if ($LASTEXITCODE -ne 0 -or -not $out) { return $null }
+    return ($out | Select-Object -Last 1).Trim()
   } catch {
     Log "deadlinecommand query failed: $($_.Exception.Message)"
     return $null
   }
 }
 
-function Get-DeadlineStatusString {
-  $txt = Get-DeadlineWorkerInfoText
-  if (-not $txt) { return $null }
-
-  if ($txt -match '(?im)^\s*(SlaveStatus|WorkerStatus)\s*=\s*(.+?)\s*$') { return $matches[2].Trim() }
-  if ($txt -match '(?im)^\s*Status\s*=\s*(.+?)\s*$') { return $matches[1].Trim() }
-  if ($txt -match '(?im)^\s*State\s*=\s*(.+?)\s*$') { return $matches[1].Trim() }
-
-  foreach ($line in ($txt -split "`n")) {
-    if ($line -match '(?i)rendering|idle') { return $line.Trim() }
-  }
-  return $null
-}
-
 function Test-DeadlineIdle {
-  # If Worker is not running at all, Deadline is not active -> don't gate sleep.
-  if (-not (Test-DeadlineWorkerRunning)) { return $true }
-
-  # Worker IS running. Only block when we can clearly see it's busy.
-  # Unknown status (deadlinecommand unreachable/returns nothing) = fall through to CPU/GPU sampling.
-  $status = Get-DeadlineStatusString
+  $status = Get-DeadlineSlaveStatus
   if (-not $status) {
     Log "Deadline status=unknown -> not blocking (will rely on CPU/GPU sampling)"
     return $true
   }
-
   Log ("Deadline status={0}" -f $status)
-  if ($status -match '(?i)render|busy|starting|running|initializ|processing|encoding') { return $false }
+  # Block sleep when Deadline is actively working or about to launch C4D
+  if ($status -match '(?i)render|starting|busy|initializ|processing') { return $false }
   return $true
 }
 
