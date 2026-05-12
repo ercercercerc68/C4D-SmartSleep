@@ -244,15 +244,8 @@ function Should-Sleep {
   $dlIdle = Test-DeadlineIdle
   if (-not $dlIdle) { Log "Deadline busy -> stay awake"; return $false }
 
-  $isC4D          = Test-C4DRunning
-  $isDeadlineProc = Test-DeadlineWorkerRunning
-  Log ("C4D running={0}  DeadlineWorker running={1}" -f $isC4D, $isDeadlineProc)
-
-  # If Deadline Worker is up but C4D hasn't launched yet -> between-job gap, stay awake.
-  if ($isDeadlineProc -and -not $isC4D){
-    Log "Deadline Worker running but C4D not yet launched (between jobs) -> stay awake"
-    return $false
-  }
+  $isC4D = Test-C4DRunning
+  Log ("C4D running={0}" -f $isC4D)
 
   if (-not $isC4D){
     Log "C4D not running -> OK to sleep"
