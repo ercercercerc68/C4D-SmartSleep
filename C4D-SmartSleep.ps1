@@ -4,10 +4,10 @@
 
 # ===== CONFIG =====
 $IdleMinutesThreshold   = 15
-$GpuIdleThresholdPct    = 10
+$GpuIdleThresholdPct    = 10     # GPU utilization% threshold
+$GpuIdlePowerW          = 60     # GPU power draw threshold in watts (idle ~10W, rendering 100W+)
 $CpuIdleThresholdPct    = 8
 $Samples                = 5
-$GpuPStateMaxIdle       = 1      # P0/P1 = truly idle; P2+ = active compute
 # Per-sample CPU window (seconds). De-synced to avoid aligning with fixed-length render frames.
 # If you add more $Samples, add matching entries here (or the script auto-fills with random intervals).
 $SampleIntervalsSecs    = @(59, 45, 76, 52, 68)
@@ -171,28 +171,27 @@ function Get-C4D-CPUPercent([int]$intervalSeconds){
 
 # ===== GPU util + P-state via nvidia-smi =====
 function Get-NV-GpuInfo {
-  # Returns hashtable with .Utils (int[]) and .PStates (int[])
-  # P-state: 0/1 = idle, 2+ = active compute (GPU is working even if util% briefly dips to 0)
+  # Returns hashtable with .Utils (int[]) and .PowerW (float[])
   try {
     $cmd = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
     if (-not $cmd){ Log "nvidia-smi not found"; return $null }
 
-    $out = & $cmd.Source --query-gpu=utilization.gpu,pstate --format=csv,noheader,nounits 2>&1
+    $out = & $cmd.Source --query-gpu=utilization.gpu,power.draw --format=csv,noheader,nounits 2>&1
     if (-not $out){ Log "nvidia-smi returned empty output"; return $null }
 
-    $utils   = @()
-    $pstates = @()
+    $utils  = @()
+    $powers = @()
     foreach ($line in ($out -split "`n")) {
       $s = $line.Trim()
       if (-not $s){ continue }
-      # Expected format per GPU: "45, P2"
-      if ($s -match '^(\d+)\s*,\s*P(\d+)$'){
-        $utils   += [int]$Matches[1]
-        $pstates += [int]$Matches[2]
+      # Expected format per GPU: "45, 148.71"
+      if ($s -match '^(\d+)\s*,\s*([\d.]+)$'){
+        $utils  += [int]$Matches[1]
+        $powers += [float]$Matches[2]
       }
     }
     if ($utils.Count -gt 0){
-      return @{ Utils = $utils; PStates = $pstates }
+      return @{ Utils = $utils; PowerW = $powers }
     } else {
       Log "nvidia-smi parsed no GPU data from: $($out -join '|')"
       return $null
@@ -234,29 +233,29 @@ function Should-Sleep {
     $cpuPct   = Get-C4D-CPUPercent -intervalSeconds ([math]::Max($interval, 5))
     $gpuInfo  = Get-NV-GpuInfo
 
-    $gpuUtilTxt   = if ($gpuInfo) { ($gpuInfo.Utils   -join ',') } else { 'null' }
-    $gpuPStateTxt = if ($gpuInfo) { ($gpuInfo.PStates | ForEach-Object { "P$_" }) -join ',' } else { 'null' }
-    Log ("Sample {0}/{1} (win={2}s): CPU={3}%  GPUs=[{4}]  PStates=[{5}]" -f $i, $Samples, $interval, ($cpuPct -as [string]), $gpuUtilTxt, $gpuPStateTxt)
+    $gpuUtilTxt  = if ($gpuInfo) { ($gpuInfo.Utils  -join ',') } else { 'null' }
+    $gpuPowerTxt = if ($gpuInfo) { ($gpuInfo.PowerW | ForEach-Object { "$_`W" }) -join ',' } else { 'null' }
+    Log ("Sample {0}/{1} (win={2}s): CPU={3}%  GPUs=[{4}]  Power=[{5}]" -f $i, $Samples, $interval, ($cpuPct -as [string]), $gpuUtilTxt, $gpuPowerTxt)
 
     if ($null -eq $cpuPct -or $null -eq $gpuInfo){
       Log "  Null metric -> conservative: stay awake"
       continue
     }
 
-    # GPU is idle only if: util% all below threshold AND all P-states <= GpuPStateMaxIdle (P0/P1)
-    $anyGpuBusy    = ($gpuInfo.Utils   | Where-Object { $_ -ge $GpuIdleThresholdPct }).Count -gt 0
-    $anyGpuCompute = ($gpuInfo.PStates | Where-Object { $_ -gt $GpuPStateMaxIdle     }).Count -gt 0
+    # GPU is busy if utilization% is high OR power draw is high (catches GPU rendering with low reported util)
+    $anyGpuBusy  = ($gpuInfo.Utils  | Where-Object { $_ -ge $GpuIdleThresholdPct }).Count -gt 0
+    $anyGpuPower = ($gpuInfo.PowerW | Where-Object { $_ -ge $GpuIdlePowerW        }).Count -gt 0
 
-    if (-not $anyGpuBusy -and -not $anyGpuCompute -and ($cpuPct -lt $CpuIdleThresholdPct)){
+    if (-not $anyGpuBusy -and -not $anyGpuPower -and ($cpuPct -lt $CpuIdleThresholdPct)){
       $okCount++
       Log ("  -> idle (okCount={0}/{1})" -f $okCount, $Samples)
     } else {
-      Log ("  -> active (gpuBusy={0}, gpuCompute={1}, cpuHigh={2})" -f $anyGpuBusy, $anyGpuCompute, ($cpuPct -ge $CpuIdleThresholdPct))
+      Log ("  -> active (gpuBusy={0}, gpuPower={1}, cpuHigh={2})" -f $anyGpuBusy, $anyGpuPower, ($cpuPct -ge $CpuIdleThresholdPct))
     }
   }
 
   if ($okCount -eq $Samples){
-    Log "All $Samples samples idle (CPU<$CpuIdleThresholdPct% & GPUs<$GpuIdleThresholdPct% & P-state<=P$GpuPStateMaxIdle) -> OK to sleep"
+    Log "All $Samples samples idle (CPU<$CpuIdleThresholdPct% & GPUs<$GpuIdleThresholdPct% & Power<${GpuIdlePowerW}W) -> OK to sleep"
     return $true
   } else {
     Log "Activity detected ($okCount/$Samples idle samples) -> stay awake"
