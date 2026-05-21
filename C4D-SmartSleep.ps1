@@ -18,15 +18,6 @@ function Log([string]$msg){ try { "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $ms
 Log "----- Script start ----- (user=$env:USERNAME, ver=v5)"
 
 # ===== WINDOWS UPDATE SAFETY LATCH =====
-function Ensure-Admin {
-    if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
-        ).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
-        Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
-        exit
-    }
-}
-Ensure-Admin
-
 $global:WindowsUpdateWasRunning = $false
 
 function Pause-WindowsUpdate {
@@ -98,7 +89,8 @@ function Get-DeadlineSlaveStatus {
             'C:\Program Files\Thinkbox\Deadline\bin\deadlinecommand.exe',
             'C:\Program Files\Deadline\bin\deadlinecommand.exe'
         )
-        $dc = (Get-Command deadlinecommand.exe -ErrorAction SilentlyContinue)?.Source
+        $dcCmd = Get-Command deadlinecommand.exe -ErrorAction SilentlyContinue
+        $dc = if ($dcCmd) { $dcCmd.Source } else { $null }
         if (-not $dc) { $dc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1 }
         if (-not $dc) { return $null }
 
