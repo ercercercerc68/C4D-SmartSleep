@@ -210,6 +210,12 @@ function Should-Sleep {
     }
 
     if ($okCount -eq $Samples){
+        # Re-check idle time — user may have become active during the sampling period
+        $idleNow = Get-UserIdleMinutes
+        if ($idleNow -lt $IdleMinutesThreshold){
+            Log "All samples idle but user active during sampling (idle now=$idleNow min) -> stay awake"
+            return $false
+        }
         Log "All $Samples samples idle -> OK to sleep"
         return $true
     } else {
