@@ -3,7 +3,7 @@
 # Works with Windows PowerShell 5.1 and NVIDIA GPUs.
 
 # ===== CONFIG =====
-$IdleMinutesThreshold   = 15
+$IdleMinutesThreshold   = 5
 $GpuIdleThresholdPct    = 10
 $CpuIdleThresholdPct    = 8
 $Samples                = 3
@@ -17,7 +17,7 @@ $LogFile = Join-Path $LogDir 'C4D-SmartSleep.log'
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
 if (-not (Test-Path $LogFile)) { New-Item -ItemType File -Path $LogFile -Force | Out-Null }
 function Log([string]$msg){ try { "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg" | Out-File -FilePath $LogFile -Append -Encoding utf8 } catch {} }
-Log "----- Script start ----- (user=$env:USERNAME, ver=v6)"
+Log "----- Script start ----- (user=$env:USERNAME, ver=v7)"
 
 # ===== WINDOWS UPDATE SAFETY LATCH =====
 # Note: requires the scheduled task to run with "Run with highest privileges" enabled.
@@ -112,8 +112,11 @@ function Is-DeadlineIdle {
   $status = Get-DeadlineStatusString
   if (-not $status) { Log "Deadline status=unknown"; return $null }
   Log ("Deadline status={0}" -f $status)
-  if ($status -match '(?i)\bidle\b') { return $true }
+  # Actief renderen heeft voorrang boven elk ander signaal.
   if ($status -match '(?i)render|busy|starting|initializ|processing|encoding') { return $false }
+  if ($status -match '(?i)\bidle\b') { return $true }
+  # Offline/Disabled: de Worker draait niet, dus er kan niets via Deadline renderen.
+  if ($status -match '(?i)\b(offline|disabled)\b') { return $true }
   return $null
 }
 
@@ -170,9 +173,11 @@ function Should-Sleep {
   if ($idle -lt $IdleMinutesThreshold){ Log "Not enough idle time"; return $false }
 
   $dlIdle = Is-DeadlineIdle
-  if ($dlIdle -ne $true) {
-    if ($dlIdle -eq $false) { Log "Deadline busy -> stay awake" } else { Log "Deadline status unknown -> stay awake" }
-    return $false
+  if ($dlIdle -eq $false) { Log "Deadline busy -> stay awake"; return $false }
+  if ($null -eq $dlIdle) {
+    # Geen uitsluitsel van Deadline. Niet blind wakker blijven: de CPU/GPU-meting
+    # hieronder stelt vast of C4D echt rendert of alleen maar openstaat.
+    Log "Deadline geeft geen uitsluitsel -> CPU/GPU-meting beslist"
   }
 
   $isC4D = Is-C4DRunning
